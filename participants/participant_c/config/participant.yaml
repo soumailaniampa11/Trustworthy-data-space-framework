@@ -1,0 +1,9 @@
+# Participant C: commercial analytics company outside the EU (consumer only).
+participant:
+  id: participant_c
+  name: Analytics Corp C
+  organization: Analytics Corp C
+  roles: [consumer]
+  attributes:
+    country: US
+    sector: commercial

@@ -1,0 +1,25 @@
+# Participant B: research institute, consumes health data and shares mobility data.
+participant:
+  id: participant_b
+  name: Forschungsinstitut B
+  organization: Research Institute B
+  roles: [provider, consumer]
+  attributes:
+    country: DE
+    sector: research
+
+  datasets:
+    - id: urban-mobility-2024
+      title: Urban mobility counts 2024
+      description: Hourly bike and pedestrian counts per sensor.
+      keywords: [mobility, smart-city, sensors]
+      format: text/csv
+      sensitivity: public
+      license: CC-BY-4.0
+      source: data/mobility.csv
+      rules:
+        - id: open-use
+          type: permission
+          actions: [read, download, analyze, aggregate]
+          duties:
+            - {action: cite_source}

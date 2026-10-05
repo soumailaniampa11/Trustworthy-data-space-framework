@@ -1,0 +1,34 @@
+# Participant A: hospital sharing pseudonymised clinical data for research only.
+participant:
+  id: participant_a
+  name: Hôpital Universitaire A
+  organization: University Hospital A
+  roles: [provider, consumer]
+  attributes:
+    country: FR
+    sector: health
+    certification: iso27001
+
+  datasets:
+    - id: clinical-records-2024
+      title: Pseudonymised clinical records 2024
+      description: Admissions, diagnoses (ICD-10) and length of stay.
+      keywords: [health, clinical, icd10]
+      format: text/csv
+      sensitivity: confidential
+      license: research-only
+      source: data/clinical_records.csv
+      rules:
+        - id: eu-research
+          type: permission
+          actions: [read, analyze]
+          constraints:
+            - {left_operand: participant.country, operator: in, right_operand: [FR, DE, IT, ES, BE, NL]}
+            - {left_operand: purpose, operator: eq, right_operand: research}
+            - {left_operand: usage_count, operator: lt, right_operand: 10}
+          duties:
+            - {action: delete_after, parameters: {days: 30}}
+            - {action: cite_source}
+        - id: no-redistribution
+          type: prohibition
+          actions: [share, download]
