@@ -3,107 +3,93 @@ from datetime import datetime, timezone
 import pytest
 
 from dataspace.policy import (
-    Action,
-    Constraint,
-    Duty,
-    EvaluationContext,
-    Policy,
-    PolicyEvaluator,
-    Rule,
-    RuleType,
-    check_constraint,
+    Action, Constraint, Duty, EvaluationContext, Policy, PolicyEvaluator, Rule, RuleType,
+    from_odrl, satisfied, to_odrl,
 )
-from tests.conftest import make_participant
+from tests.conftest import subject
 
-evaluator = PolicyEvaluator()
+pdp = PolicyEvaluator()
 
 
-def ctx(action=Action.READ, purpose="research", pid="p1", **attrs):
-    return EvaluationContext(participant=make_participant(pid, **attrs), action=action, purpose=purpose)
+def ctx(action=Action.READ, purpose="research", did="did:web:p", **claims):
+    return EvaluationContext(subject=subject(did, **claims), action=action, purpose=purpose)
 
 
 def policy(*rules):
-    return Policy(assigner="owner", target="ds", rules=list(rules))
+    return Policy(uid="urn:policy:ds:v1", assigner="did:web:owner", target="ds", rules=list(rules))
+
+
+def c(left, op, right):
+    return Constraint(left_operand=left, operator=op, right_operand=right)
 
 
 def test_deny_by_default():
-    assert not evaluator.evaluate(None, ctx()).allowed
-    assert not evaluator.evaluate(policy(), ctx()).allowed
+    assert not pdp.evaluate(None, ctx()).permitted
+    assert not pdp.evaluate(policy(), ctx()).permitted
 
 
-def test_permission_with_satisfied_constraints_returns_duties():
-    rule = Rule(
-        actions=[Action.READ],
-        constraints=[Constraint(left_operand="participant.country", operator="eq", right_operand="FR")],
-        duties=[Duty(action="delete_after", parameters={"days": 30})],
-    )
-    decision = evaluator.evaluate(policy(rule), ctx(country="FR"))
-    assert decision.allowed
-    assert decision.rule_id == rule.id
-    assert decision.obligations[0].action == "delete_after"
+def test_permission_returns_obligations():
+    rule = Rule(actions=[Action.READ], constraints=[c("participant.country", "eq", "FR")],
+                duties=[Duty(action="delete", parameters={"after_days": 30})])
+    decision = pdp.evaluate(policy(rule), ctx(country="FR"))
+    assert decision.permitted and decision.rule_id == rule.id
+    assert decision.obligations[0].parameters == {"after_days": 30}
 
 
-def test_unsatisfied_constraint_is_explained():
-    rule = Rule(
-        id="r1",
-        actions=[Action.READ],
-        constraints=[Constraint(left_operand="participant.country", operator="eq", right_operand="FR")],
-    )
-    decision = evaluator.evaluate(policy(rule), ctx(country="US"))
-    assert not decision.allowed
-    assert "participant.country eq 'FR'" in decision.reason
+def test_unmet_constraints_are_explained():
+    rule = Rule(id="r1", actions=[Action.READ], constraints=[c("participant.country", "eq", "FR")])
+    decision = pdp.evaluate(policy(rule), ctx(country="US"))
+    assert not decision.permitted
+    assert decision.reason == "constraints not satisfied: r1: participant.country eq 'FR'"
 
 
-def test_missing_attribute_never_satisfies():
-    rule = Rule(
-        actions=[Action.READ],
-        constraints=[Constraint(left_operand="participant.country", operator="neq", right_operand="US")],
-    )
-    assert not evaluator.evaluate(policy(rule), ctx()).allowed
-
-
-def test_action_not_covered_is_denied():
-    decision = evaluator.evaluate(policy(Rule(actions=[Action.READ])), ctx(action=Action.DOWNLOAD))
-    assert not decision.allowed
-    assert "no rule permits 'download'" in decision.reason
+def test_unproven_claim_never_satisfies_even_negative_constraints():
+    rule = Rule(actions=[Action.READ], constraints=[c("participant.country", "neq", "US")])
+    assert not pdp.evaluate(policy(rule), ctx()).permitted
 
 
 def test_prohibition_overrides_permission():
-    allow = Rule(actions=[Action.READ, Action.SHARE])
-    deny = Rule(type=RuleType.PROHIBITION, actions=[Action.SHARE])
-    assert evaluator.evaluate(policy(allow, deny), ctx(action=Action.READ)).allowed
-    decision = evaluator.evaluate(policy(allow, deny), ctx(action=Action.SHARE))
-    assert not decision.allowed and decision.rule_id == deny.id
+    allow = Rule(actions=[Action.READ, Action.DISTRIBUTE])
+    deny = Rule(type=RuleType.PROHIBITION, actions=[Action.DISTRIBUTE])
+    assert pdp.evaluate(policy(allow, deny), ctx(action=Action.READ)).permitted
+    decision = pdp.evaluate(policy(allow, deny), ctx(action=Action.DISTRIBUTE))
+    assert not decision.permitted and decision.rule_id == deny.id
 
 
-def test_assignees_restrict_rule():
-    rule = Rule(actions=[Action.READ], assignees=["alice"])
-    assert evaluator.evaluate(policy(rule), ctx(pid="alice")).allowed
-    assert not evaluator.evaluate(policy(rule), ctx(pid="bob")).allowed
+def test_assignees():
+    rule = Rule(actions=[Action.READ], assignees=["did:web:alice"])
+    assert pdp.evaluate(policy(rule), ctx(did="did:web:alice")).permitted
+    assert not pdp.evaluate(policy(rule), ctx(did="did:web:bob")).permitted
 
 
-def test_datetime_constraint_parses_iso_strings():
-    c = Constraint(left_operand="datetime", operator="lt", right_operand="2030-01-01T00:00:00")
-    c_past = Constraint(left_operand="datetime", operator="lt", right_operand="2000-01-01T00:00:00+00:00")
+@pytest.mark.parametrize("operator, left, right, expected", [
+    ("eq", "a", "a", True), ("neq", "a", "a", False),
+    ("lt", 5, 6, True), ("lteq", 5, 5, True), ("gt", 5, 5, False), ("gteq", 5, 5, True),
+    ("isAnyOf", "a", ["a", "b"], True), ("isNoneOf", "a", ["a"], False),
+    ("hasPart", ["iso27001", "hds"], "hds", True), ("hasPart", ["iso27001"], ["iso27001", "hds"], False),
+    ("lt", 5, "ten", False),
+])
+def test_operators(operator, left, right, expected):
     context = ctx()
-    context.timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    assert check_constraint(c, context)
-    assert not check_constraint(c_past, context)
+    context.extra["x"] = left
+    assert satisfied(c("x", operator, right), context) is expected
 
 
-@pytest.mark.parametrize(
-    "operator, right, expected",
-    [("in", ["a", "b"], True), ("not_in", ["a"], False), ("gte", 5, True), ("gt", 5, False),
-     ("lte", 5, True), ("lt", 5, False), ("neq", 5, False)],
-)
-def test_operators(operator, right, expected):
+def test_datetime_constraints():
     context = ctx()
-    context.usage_count = 5
-    context.extra["tier"] = "a"
-    left = "tier" if operator in ("in", "not_in") else "usage_count"
-    assert check_constraint(Constraint(left_operand=left, operator=operator, right_operand=right), context) is expected
+    context.timestamp = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    assert satisfied(c("datetime", "lt", "2027-01-01T00:00:00"), context)
+    assert not satisfied(c("datetime", "gteq", "2027-01-01T00:00:00+00:00"), context)
 
 
-def test_type_mismatch_is_false_not_error():
-    c = Constraint(left_operand="usage_count", operator="lt", right_operand="ten")
-    assert check_constraint(c, ctx()) is False
+def test_odrl_roundtrip():
+    original = policy(
+        Rule(id="p", actions=[Action.READ, Action.AGGREGATE],
+             constraints=[c("purpose", "isAnyOf", ["research"])], duties=[Duty(action="attribute")]),
+        Rule(id="q", type=RuleType.PROHIBITION, actions=[Action.DISTRIBUTE], assignees=["did:web:x"]),
+    )
+    document = to_odrl(original)
+    assert document["@type"] == "Offer"
+    assert {p["action"] for p in document["permission"]} == {"read", "aggregate"}
+    assert document["permission"][0]["constraint"][0]["operator"] == "isAnyOf"
+    assert from_odrl(document) == original

@@ -1,0 +1,163 @@
+# Trustworthy Data Space — development deployment.
+#
+#   docker compose up --build
+#
+# Trust plane : authority (8100), catalog (8101), transparency log (8102)
+# Participants: connector-a (8001), connector-b (8002), connector-c (8003)
+# Storage     : PostgreSQL (one database per service), MinIO (one bucket per connector,
+#               console on 9001)
+#
+# Credentials below are development defaults; override them in a .env file.
+
+x-service: &service
+  build: .
+  image: trustworthy-dataspace:latest
+  restart: unless-stopped
+  depends_on:
+    postgres: {condition: service_healthy}
+
+x-connector-env: &connector-env
+  AUTHORITY_URL: http://authority:8000
+  CATALOG_URL: http://catalog:8000
+  TRANSPARENCY_URL: http://transparency:8000
+  DID_SCHEME: http
+  KEY_FILE: /keys/connector.key
+  PARTICIPANT_CONFIG: /participant/config/participant.yaml
+
+x-connector-cmd: &connector-cmd
+  ["uvicorn", "--factory", "dataspace.services.connector.app:create_app_from_env",
+   "--host", "0.0.0.0", "--port", "8000"]
+
+services:
+  # ---------------------------------------------------------------- trust plane
+  authority:
+    <<: *service
+    command: ["uvicorn", "--factory", "dataspace.services.authority.app:create_app_from_env",
+              "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      PUBLIC_URL: http://authority:8000
+      DID_SCHEME: http
+      DATABASE_URL: postgresql+psycopg://authority:${AUTHORITY_DB_PASSWORD:-authority}@postgres/authority
+      KEY_FILE: /keys/authority.key
+      REGISTRY_PATH: /config/registry.yaml
+      ADMIN_TOKEN: ${AUTHORITY_ADMIN_TOKEN:-change-me}
+    volumes:
+      - ./infrastructure/authority/registry.yaml:/config/registry.yaml:ro
+      - authority-keys:/keys
+    ports: ["8100:8000"]
+
+  catalog:
+    <<: *service
+    command: ["uvicorn", "--factory", "dataspace.services.catalog.app:create_app_from_env",
+              "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      PUBLIC_URL: http://catalog:8000
+      DID_SCHEME: http
+      DATABASE_URL: postgresql+psycopg://catalog:${CATALOG_DB_PASSWORD:-catalog}@postgres/catalog
+      KEY_FILE: /keys/catalog.key
+    volumes: [catalog-keys:/keys]
+    ports: ["8101:8000"]
+
+  transparency:
+    <<: *service
+    command: ["uvicorn", "--factory", "dataspace.services.transparency.app:create_app_from_env",
+              "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      PUBLIC_URL: http://transparency:8000
+      DID_SCHEME: http
+      DATABASE_URL: postgresql+psycopg://transparency:${TRANSPARENCY_DB_PASSWORD:-transparency}@postgres/transparency
+      KEY_FILE: /keys/transparency.key
+    volumes: [transparency-keys:/keys]
+    ports: ["8102:8000"]
+
+  # ---------------------------------------------------------------- participants
+  connector-a:
+    <<: *service
+    command: *connector-cmd
+    environment:
+      <<: *connector-env
+      PUBLIC_URL: http://connector-a:8000
+      DATABASE_URL: postgresql+psycopg://connector_a:${CONNECTOR_A_DB_PASSWORD:-connector_a}@postgres/connector_a
+      STORAGE_URL: minio://${MINIO_ROOT_USER:-dataspace}:${MINIO_ROOT_PASSWORD:-dataspace-secret}@minio:9000/connector-a
+      MANAGEMENT_API_KEY: ${CONNECTOR_A_API_KEY:-participant_a-key}
+    volumes:
+      - ./participants/participant_a:/participant:ro
+      - connector-a-keys:/keys
+    ports: ["8001:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+
+  connector-b:
+    <<: *service
+    command: *connector-cmd
+    environment:
+      <<: *connector-env
+      PUBLIC_URL: http://connector-b:8000
+      DATABASE_URL: postgresql+psycopg://connector_b:${CONNECTOR_B_DB_PASSWORD:-connector_b}@postgres/connector_b
+      STORAGE_URL: minio://${MINIO_ROOT_USER:-dataspace}:${MINIO_ROOT_PASSWORD:-dataspace-secret}@minio:9000/connector-b
+      MANAGEMENT_API_KEY: ${CONNECTOR_B_API_KEY:-participant_b-key}
+    volumes:
+      - ./participants/participant_b:/participant:ro
+      - connector-b-keys:/keys
+    ports: ["8002:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+
+  connector-c:
+    <<: *service
+    command: *connector-cmd
+    environment:
+      <<: *connector-env
+      PUBLIC_URL: http://connector-c:8000
+      DATABASE_URL: postgresql+psycopg://connector_c:${CONNECTOR_C_DB_PASSWORD:-connector_c}@postgres/connector_c
+      STORAGE_URL: minio://${MINIO_ROOT_USER:-dataspace}:${MINIO_ROOT_PASSWORD:-dataspace-secret}@minio:9000/connector-c
+      MANAGEMENT_API_KEY: ${CONNECTOR_C_API_KEY:-participant_c-key}
+    volumes:
+      - ./participants/participant_c:/participant:ro
+      - connector-c-keys:/keys
+    ports: ["8003:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+
+  # ---------------------------------------------------------------- storage
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 10
+
+  minio:
+    # The official minio/minio image is no longer published (2025); this is the
+    # last Bitnami build of the MinIO server. Any S3-compatible store works.
+    image: bitnamilegacy/minio:latest
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dataspace}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dataspace-secret}
+    volumes: [minio-data:/bitnami/minio/data]
+    ports: ["9001:9001"]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  minio-data:
+  authority-keys:
+  catalog-keys:
+  transparency-keys:
+  connector-a-keys:
+  connector-b-keys:
+  connector-c-keys:

@@ -4,24 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trustworthy-data-space"
-version = "0.1.0"
+version = "0.2.0"
 description = "Research prototype of a trustworthy, sovereign data space"
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [{name = "Soumaila Niampa"}]
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
     "cryptography>=42",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "httpx>=0.27",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
+    "minio>=7.2",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.27"]
+dev = ["pytest>=8", "httpx2"]
 
 [tool.setuptools.packages.find]
-where = ["src", "."]
-include = ["dataspace*", "api*"]
+where = ["src"]
+include = ["dataspace*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]

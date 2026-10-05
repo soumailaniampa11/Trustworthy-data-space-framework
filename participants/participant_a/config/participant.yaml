@@ -1,34 +1,32 @@
-# Participant A: hospital sharing pseudonymised clinical data for research only.
+# Participant A — university hospital (provider of clinical data).
+# Attributes such as country or certifications are NOT declared here: they
+# are attested by the authority as verifiable credentials.
 participant:
-  id: participant_a
   name: Hôpital Universitaire A
   organization: University Hospital A
-  roles: [provider, consumer]
-  attributes:
-    country: FR
-    sector: health
-    certification: iso27001
+  endpoint: http://connector-a:8000
 
   datasets:
     - id: clinical-records-2024
       title: Pseudonymised clinical records 2024
       description: Admissions, diagnoses (ICD-10) and length of stay.
       keywords: [health, clinical, icd10]
-      format: text/csv
+      media_type: text/csv
       sensitivity: confidential
       license: research-only
       source: data/clinical_records.csv
       rules:
-        - id: eu-research
+        - id: eu-certified-research
           type: permission
-          actions: [read, analyze]
+          actions: [read, aggregate]
           constraints:
-            - {left_operand: participant.country, operator: in, right_operand: [FR, DE, IT, ES, BE, NL]}
-            - {left_operand: purpose, operator: eq, right_operand: research}
+            - {left_operand: participant.region, operator: eq, right_operand: EU}
+            - {left_operand: participant.certifications, operator: hasPart, right_operand: iso27001}
+            - {left_operand: purpose, operator: isAnyOf, right_operand: [research, public-health]}
             - {left_operand: usage_count, operator: lt, right_operand: 10}
           duties:
-            - {action: delete_after, parameters: {days: 30}}
-            - {action: cite_source}
-        - id: no-redistribution
+            - {action: delete, parameters: {after_days: 30}}
+            - {action: attribute}
+        - id: no-copy-no-redistribution
           type: prohibition
-          actions: [share, download]
+          actions: [reproduce, distribute]

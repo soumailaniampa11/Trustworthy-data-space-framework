@@ -1,0 +1,29 @@
+# Facts verified out of band by the data space authority (e.g. company
+# registers, certification bodies). Participants receive credentials for
+# these facts only; what they declare about themselves is never trusted.
+participants:
+  - did: did:web:connector-a%3A8000
+    name: Hôpital Universitaire A
+    organization: University Hospital A
+    credentials:
+      MembershipCredential: {organization: University Hospital A, member: true}
+      JurisdictionCredential: {country: FR, region: EU}
+      SectorCredential: {sector: health}
+      CertificationCredential: {certifications: [iso27001, hds]}
+
+  - did: did:web:connector-b%3A8000
+    name: Forschungsinstitut B
+    organization: Research Institute B
+    credentials:
+      MembershipCredential: {organization: Research Institute B, member: true}
+      JurisdictionCredential: {country: DE, region: EU}
+      SectorCredential: {sector: research}
+      CertificationCredential: {certifications: [iso27001]}
+
+  - did: did:web:connector-c%3A8000
+    name: Analytics Corp C
+    organization: Analytics Corp C
+    credentials:
+      MembershipCredential: {organization: Analytics Corp C, member: true}
+      JurisdictionCredential: {country: US, region: non-EU}
+      SectorCredential: {sector: commercial}

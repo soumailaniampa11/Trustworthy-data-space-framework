@@ -1,11 +1,9 @@
 """Trustworthy Data Space Framework.
 
-A research prototype of a sovereign data space: participants keep their data
-in their own connector, publish offers in a shared catalog, and govern their
-use through machine-readable policies that are enforced and audited.
+Research prototype of a sovereign data space in which independent
+organisations share data under verifiable identity, machine-readable usage
+policies enforced continuously, bilateral signed contracts, and a
+publicly verifiable transparency log.
 """
 
-from dataspace.space import DataSpace
-
-__version__ = "0.1.0"
-__all__ = ["DataSpace", "__version__"]
+__version__ = "0.2.0"

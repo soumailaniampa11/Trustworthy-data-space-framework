@@ -1,13 +1,15 @@
-"""Policy decision point.
+"""Policy decision point (PDP).
 
-Semantics (deny-by-default, prohibition-overrides):
+Semantics: *deny by default* and *prohibition overrides permission*.
 
-1. If any applicable prohibition matches, the request is denied.
-2. Otherwise, if an applicable permission has all its constraints satisfied,
-   the request is allowed and the permission's duties become obligations.
-3. Otherwise the request is denied.
+1. If an applicable prohibition has all its constraints satisfied -> deny.
+2. Else, if an applicable permission has all its constraints satisfied ->
+   permit, and its duties become obligations of the contract.
+3. Else -> deny.
 
-Every decision carries a human-readable reason so that it can be audited.
+A rule is applicable when it covers the requested action and the requester
+is among its assignees (if any). Constraints referring to a claim the
+requester cannot prove are never satisfied. Every decision is explained.
 """
 
 from __future__ import annotations
@@ -17,39 +19,38 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from dataspace.identity.participant import Participant
-from dataspace.policy.policy import Action, Constraint, Duty, Operator, Policy, Rule, RuleType
+from dataspace.common.clock import utcnow
+from dataspace.identity.credentials import VerifiedSubject
+from dataspace.policy.model import Action, Constraint, Duty, Operator, Policy, Rule, RuleType
 
 _MISSING = object()
 
 
 class EvaluationContext(BaseModel):
-    participant: Participant
+    subject: VerifiedSubject
     action: Action
     purpose: str | None = None
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=utcnow)
     usage_count: int = 0
     extra: dict[str, Any] = Field(default_factory=dict)
 
     def resolve(self, path: str) -> Any:
         head, _, rest = path.partition(".")
         if head == "participant":
-            if rest in ("id", "name", "organization"):
-                return getattr(self.participant, rest)
-            if rest == "roles":
-                return sorted(r.value for r in self.participant.roles)
-            return self.participant.attributes.get(rest, _MISSING)
-        if head == "datetime":
-            return self.timestamp
+            if rest == "id":
+                return self.subject.did
+            return self.subject.claims.get(rest, _MISSING)
         if head == "purpose":
             return self.purpose if self.purpose is not None else _MISSING
+        if head == "datetime":
+            return self.timestamp
         if head == "usage_count":
             return self.usage_count
         return self.extra.get(path, _MISSING)
 
 
 class Decision(BaseModel):
-    allowed: bool
+    permitted: bool
     reason: str
     rule_id: str | None = None
     obligations: list[Duty] = Field(default_factory=list)
@@ -62,77 +63,68 @@ def _coerce(left: Any, right: Any) -> Any:
     return right
 
 
-def check_constraint(constraint: Constraint, ctx: EvaluationContext) -> bool:
+def satisfied(constraint: Constraint, ctx: EvaluationContext) -> bool:
     left = ctx.resolve(constraint.left_operand)
     if left is _MISSING:
-        return False  # an absent claim never satisfies a constraint
+        return False
     right = _coerce(left, constraint.right_operand)
-    op = constraint.operator
     try:
-        if op == Operator.EQ:
-            return left == right
-        if op == Operator.NEQ:
-            return left != right
-        if op == Operator.IN:
-            return left in right
-        if op == Operator.NOT_IN:
-            return left not in right
-        if op == Operator.LT:
-            return left < right
-        if op == Operator.LTE:
-            return left <= right
-        if op == Operator.GT:
-            return left > right
-        if op == Operator.GTE:
-            return left >= right
+        match constraint.operator:
+            case Operator.EQ:
+                return left == right
+            case Operator.NEQ:
+                return left != right
+            case Operator.LT:
+                return left < right
+            case Operator.LTEQ:
+                return left <= right
+            case Operator.GT:
+                return left > right
+            case Operator.GTEQ:
+                return left >= right
+            case Operator.IS_ANY_OF:
+                return left in right
+            case Operator.IS_NONE_OF:
+                return left not in right
+            case Operator.HAS_PART:
+                wanted = right if isinstance(right, list) else [right]
+                return isinstance(left, list) and all(w in left for w in wanted)
     except TypeError:
         return False
-    raise ValueError(f"unsupported operator {op}")
+    return False
 
 
-def _describe(c: Constraint) -> str:
-    return f"{c.left_operand} {c.operator.value} {c.right_operand!r}"
+def describe(constraint: Constraint) -> str:
+    return f"{constraint.left_operand} {constraint.operator.value} {constraint.right_operand!r}"
 
 
 class PolicyEvaluator:
-    def _applies(self, rule: Rule, ctx: EvaluationContext) -> bool:
-        if ctx.action not in rule.actions:
-            return False
-        return rule.assignees is None or ctx.participant.id in rule.assignees
-
     def evaluate(self, policy: Policy | None, ctx: EvaluationContext) -> Decision:
         if policy is None:
-            return Decision(allowed=False, reason="no policy attached (deny by default)")
+            return Decision(permitted=False, reason="no policy attached (deny by default)")
 
-        candidates = [r for r in policy.rules if self._applies(r, ctx)]
+        applicable = [r for r in policy.rules if self._applies(r, ctx)]
+        for rule in applicable:
+            if rule.type == RuleType.PROHIBITION and all(satisfied(c, ctx) for c in rule.constraints):
+                return Decision(permitted=False, reason=f"prohibited by rule {rule.id}", rule_id=rule.id)
 
-        for rule in candidates:
-            if rule.type == RuleType.PROHIBITION and all(
-                check_constraint(c, ctx) for c in rule.constraints
-            ):
-                return Decision(
-                    allowed=False,
-                    reason=f"prohibited by rule {rule.id}",
-                    rule_id=rule.id,
-                )
-
-        failures: list[str] = []
-        for rule in candidates:
+        failures = []
+        for rule in applicable:
             if rule.type != RuleType.PERMISSION:
                 continue
-            failed = [c for c in rule.constraints if not check_constraint(c, ctx)]
-            if not failed:
-                return Decision(
-                    allowed=True,
-                    reason=f"permitted by rule {rule.id}",
-                    rule_id=rule.id,
-                    obligations=list(rule.duties),
-                )
-            failures.append(f"{rule.id}: " + ", ".join(_describe(c) for c in failed))
+            unmet = [c for c in rule.constraints if not satisfied(c, ctx)]
+            if not unmet:
+                return Decision(permitted=True, reason=f"permitted by rule {rule.id}",
+                                rule_id=rule.id, obligations=list(rule.duties))
+            failures.append(f"{rule.id}: " + ", ".join(describe(c) for c in unmet))
 
         if failures:
-            return Decision(allowed=False, reason="constraints not satisfied: " + "; ".join(failures))
-        return Decision(
-            allowed=False,
-            reason=f"no rule permits '{ctx.action.value}' for '{ctx.participant.id}'",
-        )
+            return Decision(permitted=False, reason="constraints not satisfied: " + "; ".join(failures))
+        return Decision(permitted=False,
+                        reason=f"no rule permits '{ctx.action.value}' for {ctx.subject.did}")
+
+    @staticmethod
+    def _applies(rule: Rule, ctx: EvaluationContext) -> bool:
+        if ctx.action not in rule.actions:
+            return False
+        return rule.assignees is None or ctx.subject.did in rule.assignees

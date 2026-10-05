@@ -1,45 +1,32 @@
-from pathlib import Path
-
 import pytest
 
-from dataspace import DataSpace
-from dataspace.catalog import DatasetMetadata
-from dataspace.identity import Participant, Role
-from dataspace.policy import Constraint, Duty, Rule, RuleType
+from dataspace.identity.credentials import VerifiedSubject
+from dataspace.sim import LocalDataSpace
 
-PARTICIPANTS_DIR = Path(__file__).resolve().parent.parent / "participants"
-
-
-def make_participant(pid: str = "p1", **attributes) -> Participant:
-    return Participant(
-        id=pid, name=pid, organization=pid, public_key="unused",
-        roles={Role.PROVIDER, Role.CONSUMER}, attributes=attributes,
-    )
+CLINICAL = "clinical-records-2024"
+MOBILITY = "urban-mobility-2024"
 
 
 @pytest.fixture
-def space():
-    """Provider (FR hospital), EU consumer (DE lab), non-EU consumer (US company)."""
-    space = DataSpace()
-    space.join("hospital", "Hospital", "Hospital", ["provider"], {"country": "FR"})
-    space.join("lab", "Lab", "Lab", ["consumer"], {"country": "DE"})
-    space.join("corp", "Corp", "Corp", ["consumer"], {"country": "US"})
-    space.publish_dataset(
-        "hospital",
-        "records",
-        b"id,value\n1,42\n",
-        DatasetMetadata(title="Clinical records", keywords=["health"], sensitivity="confidential"),
-        [
-            Rule(
-                id="eu-research",
-                actions=["read", "analyze"],
-                constraints=[
-                    Constraint(left_operand="participant.country", operator="in", right_operand=["FR", "DE"]),
-                    Constraint(left_operand="purpose", operator="eq", right_operand="research"),
-                ],
-                duties=[Duty(action="delete_after", parameters={"days": 30})],
-            ),
-            Rule(id="no-share", type=RuleType.PROHIBITION, actions=["share"]),
-        ],
-    )
-    return space
+def space() -> LocalDataSpace:
+    """A fresh data space: authority, catalog, log and connectors A (hospital), B (EU lab), C (US company)."""
+    return LocalDataSpace().start()
+
+
+@pytest.fixture
+def hospital(space):
+    return space.clients["participant_a"]
+
+
+@pytest.fixture
+def lab(space):
+    return space.clients["participant_b"]
+
+
+@pytest.fixture
+def corp(space):
+    return space.clients["participant_c"]
+
+
+def subject(did: str = "did:web:example", **claims) -> VerifiedSubject:
+    return VerifiedSubject(did=did, claims=claims)
